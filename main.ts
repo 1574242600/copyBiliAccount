@@ -78,7 +78,7 @@ interface CreateFolderPostParams {
 interface FolderVideoListGetParams {
 	media_id: number;
 	pn: number;
-	ps: number;	// 列表长度, 默认20
+	ps: number;	// 列表长度, 默认15, 最高50
 	keyword?: string; //搜索
 	order?: string;
 	type?: number;
@@ -99,12 +99,95 @@ class BiliAccountCopy {
 	constructor(copy: BiliAccount, to_paste: BiliAccount) {
 		this.copy = copy;
 		this.to_paste = to_paste;
+		//this.copyBangumiList();
 	}
 
 	public async run() {
+		let async_list: Promise<void>[] = [];
+		async_list.push(this.copyFollowsList());
+		async_list.push(this.copyBangumiList());
+		async_list.push((async (): Promise<void> => {
 
+		})())
 	}
 
+	private async copyFollowsList(){
+		const follows_list: (object[]|number)[] = await (async (ps) => {
+
+			let follows_list: object[] = [];
+			let i: number = 1;
+			let total: number;
+
+			do {
+				let data: object = await this.copy.getFollowsList(i);
+				total = data['total'];
+
+				follows_list.unshift(
+					...(
+						data['list'].map((v: Array<object>) => {
+							return {
+								mid: v['mid'],
+								uname: v['uname'],
+							};
+						})
+					)
+				)
+
+				i++;
+			} while (follows_list.length !== total)
+
+			return [follows_list, total];
+		})()
+
+		Promise.all((<object[]>follows_list[0]).map(v => {
+			return (async () => {
+				await this.to_paste.postAddFollow(v['mid']);
+				logger(`复制关注: ${v['uname']} 成功`)
+			})();
+		})).then( _ => {
+			logger(`共复制关注 ${follows_list[2]} 个`)
+		})
+	}
+
+	private async copyBangumiList(){
+		const bangumi_list: (object[]|number)[] = await (async () => {
+			let bangumi_list: object[] = [];
+			let i: number= 1;
+			let total_pages: number = 0;
+
+			do {
+				let data = await this.copy.getBangumiList(i);
+				total_pages = data['total'];
+
+				bangumi_list.unshift(
+					...(
+						data['list'].map((v: Array<object>) => {
+							return {
+								season_id: v['season_id'],
+								title: v['title'],
+							};
+						})
+					)
+				)
+
+				i++;
+			} while ((i - 1) * 50 < total_pages )
+			return [bangumi_list, total_pages];
+		})();
+
+		Promise.all((<object[]>bangumi_list[0]).map(v => {
+			return (async () => {
+				await this.to_paste.postAddBangumi(v['season_id']);
+				logger(`复制追番: ${v['uname']} 成功`)
+			})();
+		})).then( _ => {
+			logger(`共复制追番 ${bangumi_list[2]} 个`)
+		})
+	}
+
+	private async copyCreatedFolderList() :object[] {
+
+	}
 }
 
 class BiliAccount {
@@ -129,12 +212,12 @@ class BiliAccount {
 		options.headers['Cookie'] = this.cookies;
 		options.baseURL = API_HOST;
 
-	/*
+	
 		options.proxy =  {
 			host: '127.0.0.1',
 			port: 1084,
 		};
-	*/
+	
 		
 		return axios(options).then(response => {
 			if ((response.data)['code'] !== 0) throw '请求错误: \n' + JSON.stringify(response.data);
@@ -192,7 +275,8 @@ class BiliAccount {
 		let params: BangumiListGetParams = {
 			vmid: this.user_info['mid'],
 			type: 1,
-			pn: pn
+			pn: pn,
+			ps: 50
 		}
 
 		return await this.axios({
@@ -223,7 +307,7 @@ class BiliAccount {
 		let params: FolderVideoListGetParams = {
 			media_id: media_id,
 			pn: 1,
-			ps: 20
+			ps: 50
 		}
 
 		return await this.axios({
@@ -304,8 +388,6 @@ class BiliAccount {
 		})
 	}
 
-
-	
 }
 
 function logger(msg: string) {
@@ -316,17 +398,18 @@ function logger(msg: string) {
 (async () : Promise<void> => {
 	let Account : BiliAccount[] = [];
 	
-	let copy_cookies: string = "Cookie: _uuid=3068BFED-3752-2BAC-9320-DC677D9CA4D920118infoc; buvid3=B446E90B-ABC9-4D31-846A-DE3996D7050353930infoc; CURRENT_FNVAL=16; sid=iee9usok; PVID=1; rpdid=|(J~JYR~|u~)0J'ulmku|lYl|; DedeUserID=415983021; DedeUserID__ckMd5=24f94a497395e2c1; SESSDATA=5e96f1c6%2C1609587040%2C8d29b*71; bili_jct=89f221b8fed233287462c81ab85e2731; bp_t_offset_415983021=242601721641167218; bp_video_offset_415983021=411342916458700199; LIVE_BUVID=AUTO4615947037875068"//ReadlineSync.question("需要复制的账户cookies: \n");
+	let copy_cookies: string = "buvid3=D58AEEDD-FF2D-4325-8AE1-FB25AB2415DA40958infoc; sid=cy23zr87; _uuid=68494407-C3AA-CE0E-2DF7-FC06E823D98D72415infoc; CURRENT_FNVAL=16; DedeUserID=27710126; DedeUserID__ckMd5=e5a0de56adfeac2d; SESSDATA=8b16b5a2%2C1610348859%2C3a4a1*71; bili_jct=4e72fb7961b8c592469ade52707d94dc; PVID=2"//ReadlineSync.question("需要复制的账户cookies: \n");
 	Account[0] = new BiliAccount(copy_cookies);
 	await Account[0].init()
 
 	//console.log(await Account[0].getWatchHistory(0,0,''));
 
-	let paste_cookies: string = "Cookie: _uuid=3068BFED-3752-2BAC-9320-DC677D9CA4D920118infoc; buvid3=B446E90B-ABC9-4D31-846A-DE3996D7050353930infoc; CURRENT_FNVAL=16; sid=iee9usok; PVID=1; rpdid=|(J~JYR~|u~)0J'ulmku|lYl|; DedeUserID=415983021; DedeUserID__ckMd5=24f94a497395e2c1; SESSDATA=5e96f1c6%2C1609587040%2C8d29b*71; bili_jct=89f221b8fed233287462c81ab85e2731; bp_t_offset_415983021=242601721641167218; bp_video_offset_415983021=411342916458700199; LIVE_BUVID=AUTO4615947037875068"//ReadlineSync.question("需要粘贴的账户cookies: \n");
+	let paste_cookies: string = "_uuid=3068BFED-3752-2BAC-9320-DC677D9CA4D920118infoc; buvid3=B446E90B-ABC9-4D31-846A-DE3996D7050353930infoc; CURRENT_FNVAL=16; sid=iee9usok; PVID=1; rpdid=|(J~JYR~|u~)0J'ulmku|lYl|; DedeUserID=415983021; DedeUserID__ckMd5=24f94a497395e2c1; SESSDATA=5e96f1c6%2C1609587040%2C8d29b*71; bili_jct=89f221b8fed233287462c81ab85e2731; bp_t_offset_415983021=242601721641167218; bp_video_offset_415983021=411342916458700199; LIVE_BUVID=AUTO4615947037875068"//ReadlineSync.question("需要粘贴的账户cookies: \n");
 	Account[1] = new BiliAccount(paste_cookies);
 	await Account[1].init()
 
 	const Copy : BiliAccountCopy = new BiliAccountCopy(Account[0], Account[1]);
+
 
 })().catch(e => {
 	console.log(e);
