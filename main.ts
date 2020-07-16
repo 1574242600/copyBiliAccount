@@ -3,6 +3,7 @@ import axios, {AxiosRequestConfig, AxiosResponse} from 'axios';
 
 const API_HOST = 'https://api.bilibili.com' ;
 
+//TODO: 历史记录   番剧观看时间
 enum ApiList {
 	getSelfInfo = '/x/space/myinfo',
 	getFollowsList = '/x/relation/followings',
@@ -12,6 +13,7 @@ enum ApiList {
 	postVideoHeartBeat = '/x/click-interface/web/heartbeat',
 	getCreatedFolderList = '/x/v3/fav/folder/created/list-all',
 	postCreateFolder = '/x/v3/fav/folder/add',
+	postVideoToFolder = '/x/v3/fav/resource/deal',
 	getFolderVideoList = '/x/v3/fav/resource/list',
 	getWatchHistory = '/x/web-interface/history/cursor'
 }
@@ -70,15 +72,24 @@ interface CreatedFolderListGetParams {
 interface CreateFolderPostParams {
 	title: string;
 	intro: string;
-	privac: 0 | 1;	 // 0 公开 1 私人
+	privacy: 0 | 1;	 // 0 公开 1 私人
 	cover?: string;
+	csrf: string;
+}
+
+interface VideoToFolderPostPatams {
+	rid: number; // av号
+	type: number;
+	add_media_ids?: string | number;
+	del_media_ids?: string | number;
+	jsonp: string;
 	csrf: string;
 }
 
 interface FolderVideoListGetParams {
 	media_id: number;
 	pn: number;
-	ps: number;	// 列表长度, 默认15, 最高50
+	ps: number;	// 列表长度, 默认且最高20
 	keyword?: string; //搜索
 	order?: string;
 	type?: number;
@@ -99,7 +110,10 @@ class BiliAccountCopy {
 	constructor(copy: BiliAccount, to_paste: BiliAccount) {
 		this.copy = copy;
 		this.to_paste = to_paste;
-		//this.copyBangumiList();
+		(async (): Promise<void> => {
+			let folder_info: object = await this.copyCreatedFolderList();
+			await this.copyFolderVideoList(folder_info);
+		})()
 	}
 
 	public async run() {
@@ -107,8 +121,23 @@ class BiliAccountCopy {
 		async_list.push(this.copyFollowsList());
 		async_list.push(this.copyBangumiList());
 		async_list.push((async (): Promise<void> => {
-
+			let folder_info: object = await this.copyCreatedFolderList()
+			await this.copyFolderVideoList(folder_info);
 		})())
+
+	}
+
+	//TODO: 1 秒 50
+	private async all(iterable: (() => Promise<any>)[]): Promise<void | any[]>{
+		let data: any[] = [];
+		for (let v of iterable){
+			data.push(await v());
+			await sleep(100);
+		}
+
+		if (data[0] !== undefined){
+			return data;
+		}
 	}
 
 	private async copyFollowsList(){
@@ -123,14 +152,12 @@ class BiliAccountCopy {
 				total = data['total'];
 
 				follows_list.unshift(
-					...(
-						data['list'].map((v: Array<object>) => {
+					...(data['list'].map((v: Array<object>) => {
 							return {
 								mid: v['mid'],
 								uname: v['uname'],
 							};
-						})
-					)
+						}))
 				)
 
 				i++;
@@ -139,11 +166,11 @@ class BiliAccountCopy {
 			return [follows_list, total];
 		})()
 
-		Promise.all((<object[]>follows_list[0]).map(v => {
+		await this.all((<object[]>follows_list[0]).map(v => {
 			return (async () => {
 				await this.to_paste.postAddFollow(v['mid']);
 				logger(`复制关注: ${v['uname']} 成功`)
-			})();
+			});
 		})).then( _ => {
 			logger(`共复制关注 ${follows_list[2]} 个`)
 		})
@@ -160,14 +187,12 @@ class BiliAccountCopy {
 				total_pages = data['total'];
 
 				bangumi_list.unshift(
-					...(
-						data['list'].map((v: Array<object>) => {
-							return {
-								season_id: v['season_id'],
-								title: v['title'],
-							};
-						})
-					)
+					...(data['list'].map((v: object[]) => {
+						return {
+							season_id: v['season_id'],
+							title: v['title'],
+						};
+					}))
 				)
 
 				i++;
@@ -175,18 +200,118 @@ class BiliAccountCopy {
 			return [bangumi_list, total_pages];
 		})();
 
-		Promise.all((<object[]>bangumi_list[0]).map(v => {
+		await this.all((<object[]>bangumi_list[0]).map(v => {
 			return (async () => {
 				await this.to_paste.postAddBangumi(v['season_id']);
 				logger(`复制追番: ${v['uname']} 成功`)
-			})();
+			});
 		})).then( _ => {
 			logger(`共复制追番 ${bangumi_list[2]} 个`)
 		})
 	}
 
-	private async copyCreatedFolderList() :object[] {
+	private async copyCreatedFolderList(): Promise<object> {
+		let folder_info : object = {
+			copy: [],
+			to_paste: []
+		};
 
+
+		folder_info['copy'] = await (async (): Promise<object[]> => {
+			let copy_folder: object[] = [];
+
+			let created_folder_list = await this.copy.getCreatedFolderList();
+
+			copy_folder.unshift(
+				...(created_folder_list['list'].map((v : object) => {
+					return {
+						id: v['id'],
+						title: v['title'],
+						privacy: (v['attr'] % 2) === 0 ? 0 : 1
+					}
+				}))
+			);
+
+			return copy_folder;
+		})()
+
+		
+		folder_info['to_paste'] = await (async (): Promise<object[]> =>{
+			let to_paste_folder: object[] = [];
+
+			to_paste_folder.push(await (async ()=> {
+				let _default = (await this.to_paste.getCreatedFolderList())['list'][0];
+				return {
+					id: _default['id']
+				}
+			})())	//默认收藏夹
+
+			await this.all((<object[]>folder_info['copy']).map(v => {
+				return (async () => {
+					if (v['title'] === '默认收藏夹') return 0;	//忽略默认收藏夹
+					to_paste_folder.push(await this.to_paste.postCreateFolder(v['title'], '', v['privacy']));
+					logger(`复制收藏夹: ${v['title']} 成功`)
+				});
+			})).then( _ => {
+				logger(`共复制收藏夹 ${(folder_info['copy'].length - 1)} 个`)
+			})
+
+			return to_paste_folder.map(v => {
+				return {
+					id: v['id']
+				};
+			});
+		})()
+
+		
+		return folder_info;
+	}
+
+	private async copyFolderVideoList(folder_info: object): Promise<void> {
+		let copy: object[] = folder_info['copy'];
+		let to_paste: object[] = folder_info['to_paste'];
+		let _total: number = 0;
+
+		for (let count in copy) {
+			let total: number;
+
+			let video_list: object[] = await (async () => {
+				let video_list: object[] = [];
+				let i: number = 1; //页码
+				do {
+					await sleep(100);
+
+					let temporary_video_list_info: object = (await this.copy.getFolderVideoList(copy[count]['id'], i));
+					let temporary_video_list = temporary_video_list_info['medias'];
+					total = temporary_video_list_info['info']['media_count'];
+
+					video_list.unshift(
+						...(temporary_video_list.map((v: object)=> {
+							return {
+								id: v['id'],
+								title: v['title'],
+								type: v['type']
+							}
+						}))
+					);
+					
+					i++;
+				} while ((i - 1) * 20 < total)
+
+				return video_list;
+			})()
+
+			await this.all((video_list.map(v => {
+				let mid: number = to_paste[count]['id'];
+				return (async () => {
+					await this.to_paste.postVideoToFolder(v['id'], mid, v['type']);
+					_total++;
+					logger(`复制视频到收藏夹[${v['mid']}]: ${v['title']} (av${v['id']})`);
+				})
+			})))
+		}
+
+		logger(`共复制视频到收藏夹 ${_total}个`)
 	}
 }
 
@@ -217,7 +342,8 @@ class BiliAccount {
 			host: '127.0.0.1',
 			port: 1084,
 		};
-	
+		
+
 		
 		return axios(options).then(response => {
 			if ((response.data)['code'] !== 0) throw '请求错误: \n' + JSON.stringify(response.data);
@@ -237,6 +363,12 @@ class BiliAccount {
 		})
 	}
 
+	/**
+	 * 对象转 post 字符串
+	 * @name postDataToString
+	 * @param data object
+	 * @return string
+	 */
 	private postDataToString(data: object): string {
 		let arr: string[] = [];
 
@@ -247,6 +379,11 @@ class BiliAccount {
 		return arr.join('&');
 	}
 
+	/**
+	 * 获取个人信息
+	 * @name getUserInfo
+	 * @return Promise<object>
+	 */
 	public async getUserInfo(): Promise<object> {
 		return await this.axios({
 			method: 'GET',
@@ -256,6 +393,11 @@ class BiliAccount {
 		});
 	}
 
+	/**
+	 * 获取关注列表
+	 * @name getFollowsList
+	 * @param pn number 页码
+	 */
 	public async getFollowsList(pn: number = 0){
 		let params: FollowsListGetParams = {
 			vmid: this.user_info['mid'],
@@ -271,6 +413,12 @@ class BiliAccount {
 		})
 	}
 
+	/**
+	 * 获取追番列表
+	 * @name getBangumiList
+	 * @param pn number 页码
+	 * @return Promise<object>
+	 */
 	public async getBangumiList(pn: number = 1): Promise<object> {
 		let params: BangumiListGetParams = {
 			vmid: this.user_info['mid'],
@@ -288,6 +436,10 @@ class BiliAccount {
 		});
 	}
 
+	/**
+	 * 获取收藏夹列表
+	 * @name getCreatedFolderList
+	 */
 	public async getCreatedFolderList(): Promise<object> {
 		let params: CreatedFolderListGetParams = {
 			up_mid: this.user_info['mid'],
@@ -303,11 +455,18 @@ class BiliAccount {
 		})
 	}
 
-	public async getFolderVideoList(media_id: number): Promise<object>{
+	/**
+	 * 获取收藏夹视频
+	 * @name getFolderVideoList
+	 * @param media_id number 收藏夹id
+	 * @param pn number 页码
+	 * @return Promise<object>
+	 */
+	public async getFolderVideoList(media_id: number,pn: number = 1): Promise<object>{
 		let params: FolderVideoListGetParams = {
 			media_id: media_id,
-			pn: 1,
-			ps: 50
+			pn: pn,
+			ps: 20
 		}
 
 		return await this.axios({
@@ -319,6 +478,14 @@ class BiliAccount {
 		})
 	}
 
+	/**
+	 * 获取历史记录
+	 * @name getWatchHistory
+	 * @param max number
+	 * @param view_at number
+	 * @param business string
+	 * @return Promise<object>
+	 */
 	public async getWatchHistory(max: number, view_at: number, business: string): Promise<object> {
 		let params: WatchHistoryGetParams = {
 			max: max,
@@ -335,6 +502,11 @@ class BiliAccount {
 		});
 	}
 
+	/**
+	 * 关注
+	 * @name postAddFollow
+	 * @param fid number 用户uid
+	 */
 	public async postAddFollow(fid: number): Promise<void> {
 		let data: AddFollowPostParams = {
 			fid: fid,
@@ -350,6 +522,11 @@ class BiliAccount {
 		})
 	}
 
+	/**
+	 * 追番
+	 * @name postAddBangumi
+	 * @param season_id number 番剧sid
+	 */
 	public async postAddBangumi(season_id: number): Promise<void> {
 		let data: AddBangumiPostParams = {
 			season_id: season_id,
@@ -363,11 +540,19 @@ class BiliAccount {
 		})
 	}
 
-	public async postCreateFolder(title: string, intro: string, privac: 0 | 1): Promise<object> {
+	/**
+	 * 创建收藏夹
+	 * @name postCreateFolder
+	 * @param title string 标题
+	 * @param intro string 简介
+	 * @param privacy number  0 公开 ， 1私用
+	 * @return Promise<object>
+	 */
+	public async postCreateFolder(title: string, intro: string, privacy: 0 | 1): Promise<object> {
 		let data: CreateFolderPostParams = {
 			title: title,
 			intro: intro,
-			privac: privac,
+			privacy: privacy,
 			csrf: this.csrf
 		}
 
@@ -380,11 +565,38 @@ class BiliAccount {
 		})
 	}
 
-	public async VideoHeartBeatPostParams(data: VideoHeartBeatPostParams): Promise<void> {
+	/**
+	* 心跳包 用于添加历史记录
+	* @name postVideoHeartBeat
+	* @param data VideoHeartBeatPostParams
+	*/
+	public async postVideoHeartBeat(data: VideoHeartBeatPostParams): Promise<void> {
 		await this.axios({
 			method: 'POST',
 			data: data,
 			url: ApiList.postCreateFolder,
+		})
+	}
+	
+	/**
+	* 收藏 视频
+	* @name postVideoToFolder
+	* @param rid number av号
+	* @param mid number | string 收藏夹id
+	*/
+	public async postVideoToFolder(rid: number, mid: number | string, type: number): Promise<void>{
+		let data: VideoToFolderPostPatams = {
+			rid: rid,
+			add_media_ids: mid,
+			type: type,
+			jsonp: 'jsonp',
+			csrf: this.csrf
+		}
+
+		await this.axios({
+			method: 'POST',
+			data: data,
+			url: ApiList.postVideoToFolder,
 		})
 	}
 
@@ -393,6 +605,12 @@ class BiliAccount {
 function logger(msg: string) {
 	console.log(msg);
 }
+
+function sleep(ms) {
+	return new Promise((resolve) => {
+	  setTimeout(resolve, ms);
+	});
+} 
 
 //main
 (async () : Promise<void> => {
