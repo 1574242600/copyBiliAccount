@@ -110,25 +110,21 @@ class BiliAccountCopy {
 	constructor(copy: BiliAccount, to_paste: BiliAccount) {
 		this.copy = copy;
 		this.to_paste = to_paste;
-		(async (): Promise<void> => {
-			let folder_info: object = await this.copyCreatedFolderList();
-			await this.copyFolderVideoList(folder_info);
-		})()
 	}
 
 	public async run() {
 		let async_list: Promise<void>[] = [];
-		async_list.push(this.copyFollowsList());
+		//async_list.push(this.copyFollowsList());
 		async_list.push(this.copyBangumiList());
-		async_list.push((async (): Promise<void> => {
+		/*async_list.push((async (): Promise<void> => {
 			let folder_info: object = await this.copyCreatedFolderList()
 			await this.copyFolderVideoList(folder_info);
-		})())
+		})())*/
 
 	}
 
-	//TODO: 1 秒 50
-	private async all(iterable: (() => Promise<any>)[]): Promise<void | any[]>{
+	//TODO: 测试最高请求速率
+	private async all<T = void>(iterable: (() => Promise<T>)[]): Promise<void | T[]>{
 		let data: any[] = [];
 		for (let v of iterable){
 			data.push(await v());
@@ -203,7 +199,7 @@ class BiliAccountCopy {
 		await this.all((<object[]>bangumi_list[0]).map(v => {
 			return (async () => {
 				await this.to_paste.postAddBangumi(v['season_id']);
-				logger(`复制追番: ${v['uname']} 成功`)
+				logger(`复制追番: ${v['title']} 成功`)
 			});
 		})).then( _ => {
 			logger(`共复制追番 ${bangumi_list[2]} 个`)
@@ -306,7 +302,7 @@ class BiliAccountCopy {
 				return (async () => {
 					await this.to_paste.postVideoToFolder(v['id'], mid, v['type']);
 					_total++;
-					logger(`复制视频到收藏夹[${v['mid']}]: ${v['title']} (av${v['id']})`);
+					logger(`复制视频到收藏夹[${mid}]: ${v['title']} (av${v['id']})`);
 				})
 			})))
 		}
@@ -627,7 +623,7 @@ function sleep(ms) {
 	await Account[1].init()
 
 	const Copy : BiliAccountCopy = new BiliAccountCopy(Account[0], Account[1]);
-
+	Copy.run();
 
 })().catch(e => {
 	console.log(e);
