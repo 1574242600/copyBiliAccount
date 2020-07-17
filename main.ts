@@ -3,7 +3,6 @@ import axios, {AxiosRequestConfig, AxiosResponse} from 'axios';
 
 const API_HOST = 'https://api.bilibili.com' ;
 
-//TODO: 历史记录   番剧观看时间
 enum ApiList {
 	getSelfInfo = '/x/space/myinfo',
 	getFollowsList = '/x/relation/followings',
@@ -50,8 +49,8 @@ interface VideoHeartBeatPostParams {
 	aid: number;
 	cid: number;
 	bvid: string;
-	mid: number;
-	csrf: string;
+	mid?: number;
+	csrf?: string;
 	played_time: number;
 	real_played_time: number;
 	realtime: number;
@@ -113,21 +112,42 @@ class BiliAccountCopy {
 	}
 
 	public async run() {
-		let async_list: Promise<void>[] = [];
+		let async_list: (Promise<void>)[] = [];
 		//async_list.push(this.copyFollowsList());
-		async_list.push(this.copyBangumiList());
-		/*async_list.push((async (): Promise<void> => {
+		//async_list.push(this.copyBangumiList());
+		//async_list.push(this.copyWatchHistory());
+		//番剧上一次观看时间
+
+		/*async_list.push((async () => {
 			let folder_info: object = await this.copyCreatedFolderList()
 			await this.copyFolderVideoList(folder_info);
 		})())*/
 
+		Promise.all(async_list).then( _ => {
+			logger('复制完成')
+		})
 	}
 
 	//TODO: 测试最高请求速率
 	private async all<T = void>(iterable: (() => Promise<T>)[]): Promise<void | T[]>{
 		let data: any[] = [];
-		for (let v of iterable){
-			data.push(await v());
+		let t: number = 3;  //单次异步请求数量
+
+		for (let c = 0; c < iterable.length; c = c + t){
+			let temporary_async: (Promise<any>)[] = [];
+
+			for(let i of range(0, t)){
+				let index = c + i;
+				if(index > iterable.length - 1) break;
+				temporary_async.push(iterable[index]());
+			}
+
+			await Promise.all(temporary_async).then(list => {
+				for (let v of list){
+					data.push(v);
+				}
+			})
+
 			await sleep(100);
 		}
 
@@ -202,7 +222,7 @@ class BiliAccountCopy {
 				logger(`复制追番: ${v['title']} 成功`)
 			});
 		})).then( _ => {
-			logger(`共复制追番 ${bangumi_list[2]} 个`)
+			logger(`共复制追番 ${bangumi_list.length}} 个`)
 		})
 	}
 
@@ -309,6 +329,51 @@ class BiliAccountCopy {
 
 		logger(`共复制视频到收藏夹 ${_total}个`)
 	}
+
+	private async copyWatchHistory(){
+		let history_list: object[] = await (async ()=> {
+			let history_list: object[] = [];
+			let params: WatchHistoryGetParams = {
+				max: 0,
+				view_at: 0,
+				business: ''
+			}
+
+			while (true) {
+				let temporary_history: object = await this.copy.getWatchHistory(params);
+				if(temporary_history['list'].length === 0) break;
+				delete temporary_history['cursor']['ps'];
+				params = temporary_history['cursor']
+				history_list.push(...temporary_history['list']);
+			}
+
+			return history_list;
+		})()
+		
+		await this.all((history_list.map(v => {
+			let is_fan: boolean = v['badge'] === '番剧';
+
+			let data: VideoHeartBeatPostParams = {
+				aid: v['history']['oid'],
+				cid: v['history']['cid'],
+				bvid: avToBV(v['history']['oid']),
+				start_ts: v['view_at'],
+				played_time: v['progress'],
+				real_played_time: v['progress'],
+				realtime: v['progress'],
+				type: is_fan ? 4 : 3,
+				epid: is_fan ? v['history']['epid'] : undefined,
+				sid: is_fan ? v['history']['sid'] : undefined 
+			}
+
+			return (async () => {
+				await this.to_paste.postVideoHeartBeat(data);
+				logger(`复制历史记录: ${v['title']} 成功`);
+			})
+		})))
+
+		logger(`共复制历史记录: ${history_list.length}条`);
+	}
 }
 
 class BiliAccount {
@@ -332,14 +397,11 @@ class BiliAccount {
 		options.headers['Referer'] = 'https://www.bilibili.com/';
 		options.headers['Cookie'] = this.cookies;
 		options.baseURL = API_HOST;
-
 	
 		options.proxy =  {
 			host: '127.0.0.1',
 			port: 1084,
 		};
-		
-
 		
 		return axios(options).then(response => {
 			if ((response.data)['code'] !== 0) throw '请求错误: \n' + JSON.stringify(response.data);
@@ -477,18 +539,10 @@ class BiliAccount {
 	/**
 	 * 获取历史记录
 	 * @name getWatchHistory
-	 * @param max number
-	 * @param view_at number
-	 * @param business string
+	 * @param params WatchHistoryGetParams
 	 * @return Promise<object>
 	 */
-	public async getWatchHistory(max: number, view_at: number, business: string): Promise<object> {
-		let params: WatchHistoryGetParams = {
-			max: max,
-			view_at: view_at,
-			business: business
-		}
-
+	public async getWatchHistory(params: WatchHistoryGetParams): Promise<object> {
 		return await this.axios({
 			method: 'GET',
 			params: params,
@@ -567,10 +621,13 @@ class BiliAccount {
 	* @param data VideoHeartBeatPostParams
 	*/
 	public async postVideoHeartBeat(data: VideoHeartBeatPostParams): Promise<void> {
+		data['csrf'] = this.csrf;
+		data['mid'] = this.user_info['mid'];
+
 		await this.axios({
 			method: 'POST',
 			data: data,
-			url: ApiList.postCreateFolder,
+			url: ApiList.postVideoHeartBeat,
 		})
 	}
 	
@@ -608,10 +665,36 @@ function sleep(ms) {
 	});
 } 
 
+function avToBV(av: number): string {
+	let table='fZodR9XQDSUm21yCkr6zBqiveYah8bt4xsWpHnJE7jL5VG3guMTKNPAwcF';
+	let tr = {};
+	for (let i of range(0,58)){
+		tr[table[i]] = i;
+	}
+
+	let s = [11,10,3,8,4,6];
+	let xor = 177451812;
+	let add = 8728348608;
+
+	av = (av ^ xor) + add
+	let r = 'BV1  4 1 7  '.split('');
+	for (let i of range(0, 6)){
+		r[s[i]] = table[Math.floor(av / (58 ** i)) % 58]
+	}
+
+	return r.join('');
+}
+
+function* range(start: number, end: number, step: number = 1): Generator<number> {
+	for (let i = start; i < end; i += step) {
+        yield i;
+    }
+}
+
 //main
 (async () : Promise<void> => {
 	let Account : BiliAccount[] = [];
-	
+
 	let copy_cookies: string = "buvid3=D58AEEDD-FF2D-4325-8AE1-FB25AB2415DA40958infoc; sid=cy23zr87; _uuid=68494407-C3AA-CE0E-2DF7-FC06E823D98D72415infoc; CURRENT_FNVAL=16; DedeUserID=27710126; DedeUserID__ckMd5=e5a0de56adfeac2d; SESSDATA=8b16b5a2%2C1610348859%2C3a4a1*71; bili_jct=4e72fb7961b8c592469ade52707d94dc; PVID=2"//ReadlineSync.question("需要复制的账户cookies: \n");
 	Account[0] = new BiliAccount(copy_cookies);
 	await Account[0].init()
