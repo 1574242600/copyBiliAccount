@@ -11,7 +11,7 @@
   "devDependencies": {},
   "scripts": {
     "build": "tsc",
-    "run": "tsc && node main.js"
+    "start": "node main.js"
   },
   "author": "nworm",
   "license": "MIT"
