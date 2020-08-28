@@ -427,7 +427,7 @@ class BiliAccount {
 
     constructor(cookies: string) {
         this.cookies = cookies;
-        this.csrf = cookies.match(/bili_jct=(.*?);/)[1];
+        this.csrf = cookies.match(/bili_jct=([0-9a-z]{32})/)[1];
     }
 
     private axios(options: AxiosRequestConfig, is_api: number = 1): Promise<AxiosResponse> {
@@ -528,7 +528,7 @@ class BiliAccount {
             vmid: this.user_info['mid'],
             type: 1,
             pn: pn,
-            ps: 50
+            ps: 20
         }
 
         return await this.axios({
@@ -780,7 +780,7 @@ function* range(start: number, end: number, step: number = 1): Generator<number>
     let copy_cookies: string = ReadlineSync.question("需要复制的账户: \n");
     Account[0] = new BiliAccount(copy_cookies);
     await Account[0].init()
-
+    
     let paste_cookies: string = ReadlineSync.question("需要粘贴的账户: \n");
     Account[1] = new BiliAccount(paste_cookies);
     await Account[1].init()
